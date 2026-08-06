@@ -1,0 +1,19 @@
+# 스케줄이 동작하는지 확인하는 임시 워크플로.
+# 확인이 끝나면 반드시 삭제하세요 (15분마다 계속 돌아갑니다).
+name: schedule-test
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'   # 시간대 무관, 15분마다
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print times
+        run: |
+          echo "trigger : ${{ github.event_name }}"
+          echo "UTC     : $(date -u '+%Y-%m-%d %H:%M')"
+          echo "ET      : $(TZ=America/New_York date '+%Y-%m-%d %H:%M')"
+          echo "KST     : $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M')"
