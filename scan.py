@@ -148,26 +148,23 @@ def analyze(ticker: str):
 # ── 출력 ────────────────────────────────────────────────
 def build_message(rows):
     kst = datetime.now(ZoneInfo("Asia/Seoul"))
-    et = datetime.now(ZoneInfo("America/New_York"))
-    lines = [f"📈 <b>오늘의 주식 ({et.month}/{et.day} ET)</b>", ""]
+    header = f"📈 <b>오늘의 주식 ({kst.month}/{kst.day})</b>"
 
     if not rows:
-        lines.append(f"오늘은 손익비 {MIN_RR}:1 이상 + 지지선 {MAX_SUPPORT_GAP}% 이내 조건을")
-        lines.append("만족하는 종목이 없습니다.")
-    else:
-        for r in rows:
-            lines += [
-                f"🔹 <b>{r['ticker']}</b> 현재가 : {r['price']:.2f}",
-                f"손절가 : {r['stop']:.2f} | 익절가 : {r['target']:.2f}",
-                f"손익비 : {r['rr']:.1f} : 1 (지지선까지 -{r['gap']:.1f}%)",
-                f"근거 : {r['reason']}",
-                "",
-            ]
-    lines += [
-        f"<i>기준: {kst:%Y-%m-%d %H:%M} KST / 시세: yfinance ({rows[0]['src'] if rows else '전일종가'})</i>",
-        "<i>참고용 계산 결과이며 투자 권유가 아닙니다.</i>",
+        return (f"{header}\n\n"
+                f"오늘은 손익비 {MIN_RR}:1 이상 + 지지선 {MAX_SUPPORT_GAP}% 이내 조건을\n"
+                f"만족하는 종목이 없습니다.")
+
+    blocks = [
+        "\n".join([
+            f"🔹 <b>{r['ticker']}</b> 현재가 : {r['price']:.2f}",
+            f"손절가 : {r['stop']:.2f} | 익절가 : {r['target']:.2f}",
+            f"손익비 : {r['rr']:.1f} : 1 (지지선까지 -{r['gap']:.1f}%)",
+            f"<b>[분석]</b> {r['reason']}",
+        ])
+        for r in rows
     ]
-    return "\n".join(lines)
+    return header + "\n\n" + "\n\n".join(blocks)
 
 
 def send(text: str):
