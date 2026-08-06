@@ -20,7 +20,7 @@ import requests
 import yfinance as yf
 
 # ── 설정 ────────────────────────────────────────────────
-TICKERS = ["SPY", "QQQ", "SOXX", "IWM", "NVDA", "AAPL", "MSFT", "TSLA", "AMD", "GOOGL"]
+TICKERS = ["SPY", "QQQ", "SOXX", "IGV", "META", "AMZN", "GOOGL", "NVDA", "TSLA", "AAPL", "MSFT", "MSTR"]
 
 MIN_RR = 2.0          # 최소 손익비 (익절폭 / 손절폭)
 MAX_SUPPORT_GAP = 3.0 # 현재가가 지지선 위로 이 % 이내일 것
