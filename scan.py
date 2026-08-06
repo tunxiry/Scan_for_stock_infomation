@@ -20,7 +20,7 @@ import requests
 import yfinance as yf
 
 # ── 설정 ────────────────────────────────────────────────
-TICKERS = ["SPY", "QQQ", "SOXX", "IGV", "META", "AMZN", "GOOGL", "NVDA", "TSLA", "AAPL", "MSFT", "MSTR"]
+ICKERS = ["SPY", "QQQ", "SOXX", "IGV", "META", "AMZN", "GOOGL", "NVDA", "TSLA", "AAPL", "MSFT", "MSTR"]
 
 MIN_RR = 2.0          # 최소 손익비 (익절폭 / 손절폭)
 MAX_SUPPORT_GAP = 3.0 # 현재가가 지지선 위로 이 % 이내일 것
@@ -28,6 +28,10 @@ SWING_WINDOW = 5      # 스윙 고/저점 판정 창 (좌우 N봉)
 ATR_MULT = 0.5        # 손절가를 지지선 아래로 ATR의 몇 배 내릴지
 LOOKBACK = "1y"
 STATE_FILE = "state.json"  # 같은 종목 중복 알림 방지용
+
+# 피벗 레벨 표기명
+PIVOT_LABEL = {"S1": "1차 지지", "S2": "2차 지지",
+               "R1": "1차 저항", "R2": "2차 저항"}
 
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID")
@@ -112,16 +116,20 @@ def analyze(ticker: str):
 
     support = max(cluster(sup_raw), key=lambda x: x[0])       # 가장 가까운 지지
 
-    # 저항: 현재가에서 최소 1.5% 이상 떨어진 레벨 중, 2회 이상 검증된 것을 우선.
+    def touches(levels, target, tol=0.015):
+        """해당 가격대를 실제로 몇 번 되돌림했는지. 스윙 고/저점만 셈."""
+        return sum(1 for lv in levels if abs(lv - target) / target < tol)
+
+    # 저항: 현재가에서 최소 1.5% 이상 떨어진 레벨 중, 실제로 2번 이상 막힌 곳을 우선.
     # (바로 위 잡음 레벨을 익절가로 잡으면 손익비가 무의미해짐)
-    res_c = [c for c in cluster(res_raw) if (c[0] - price) / price > 0.015]
+    res_c = [c[0] for c in cluster(res_raw) if (c[0] - price) / price > 0.015]
     if not res_c:
         return None
-    strong = [c for c in res_c if c[1] >= 2]
-    resistance = min(strong or res_c, key=lambda x: x[0])
+    strong = [lv for lv in res_c if touches(highs, lv) >= 2]
+    resistance = min(strong or res_c)
 
     stop = support[0] - ATR_MULT * a
-    target = resistance[0]
+    target = resistance
     risk, reward = price - stop, target - price
     if risk <= 0 or reward <= 0:
         return None
@@ -131,12 +139,23 @@ def analyze(ticker: str):
 
     reasons = []
     for n, v in sma.items():
-        if abs(price - v) / price < 0.02:
-            reasons.append(f"{n}일선 근접")
-    if abs(support[0] - piv["S1"]) / price < 0.01:
-        reasons.append("피벗 S1")
-    if support[1] >= 2:
-        reasons.append(f"지지 {support[1]}회 검증")
+        if abs(support[0] - v) / price < 0.01:
+            reasons.append(f"{n}일선 지지")
+    # 피벗 지지: S1 우선, 하나만 표기 (전일 변동폭이 좁으면 S1·S2가 겹침)
+    for k in ("S1", "S2"):
+        if abs(support[0] - piv[k]) / price < 0.01:
+            reasons.append(f"피벗 {PIVOT_LABEL[k]}")
+            break
+    n_touch = touches(lows, support[0])
+    if n_touch >= 2:
+        reasons.append(f"지지 {n_touch}회 반등")
+    elif n_touch == 1:
+        reasons.append("스윙 저점")
+    # 익절가가 피벗 저항과 겹치면 함께 표기 (R1 우선, 하나만)
+    for k in ("R1", "R2"):
+        if abs(target - piv[k]) / price < 0.01:
+            reasons.append(f"목표 = 피벗 {PIVOT_LABEL[k]}")
+            break
 
     return {
         "ticker": ticker, "price": price, "src": src,
