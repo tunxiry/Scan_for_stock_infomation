@@ -229,13 +229,12 @@ def main():
 
     if not fresh and not daily:
         print("새 신호 없음 — 발송 생략")
-        return
+    else:
+        send(build_message(fresh))
+        for r in fresh:
+            state[r["ticker"]] = today
 
-    send(build_message(fresh))
-
-    for r in fresh:
-        state[r["ticker"]] = today
-    # 이전 날짜 기록 정리
+    # 발송 여부와 무관하게 항상 기록 (없으면 워크플로의 git add가 실패)
     state = {k: v for k, v in state.items() if v == today}
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2, sort_keys=True)
