@@ -23,11 +23,16 @@ import yfinance as yf
 TICKERS = ["SPY", "QQQ", "SOXX", "IGV", "META", "AMZN", "GOOGL", "NVDA", "TSLA", "AAPL", "MSFT", "MSTR"]
 
 MIN_RR = 2.0          # 최소 손익비 (익절폭 / 손절폭)
+MAX_RR = 8.0          # 이보다 크면 저항 인식 오류로 보고 제외
 MAX_SUPPORT_GAP = 3.0 # 현재가가 지지선 위로 이 % 이내일 것
+MAX_TARGET_PCT = 15.0 # 익절가가 현재가보다 이 % 넘게 위면 제외
 SWING_WINDOW = 5      # 스윙 고/저점 판정 창 (좌우 N봉)
 ATR_MULT = 0.5        # 손절가를 지지선 아래로 ATR의 몇 배 내릴지
 LOOKBACK = "1y"
-STATE_FILE = "state.json"  # 같은 종목 중복 알림 방지용
+STATE_FILE = "state.json"  # 재알림 판단용 상태
+RR_IMPROVE = 1.25     # 손익비가 이 배수 이상 좋아지면 같은 종목도 재알림
+COOLDOWN_MIN = 45     # 같은 종목 재알림 최소 간격(분)
+MAX_ALERTS_DAY = 3    # 같은 종목 하루 최대 알림 횟수
 
 # 피벗 레벨 표기명
 PIVOT_LABEL = {"S1": "1차 지지", "S2": "2차 지지",
@@ -122,7 +127,10 @@ def analyze(ticker: str):
 
     # 저항: 현재가에서 최소 1.5% 이상 떨어진 레벨 중, 실제로 2번 이상 막힌 곳을 우선.
     # (바로 위 잡음 레벨을 익절가로 잡으면 손익비가 무의미해짐)
-    res_c = [c[0] for c in cluster(res_raw) if (c[0] - price) / price > 0.015]
+    # 익절가 후보는 현재가 +1.5% ~ +MAX_TARGET_PCT 구간으로 제한.
+    # (상한이 없으면 하락 추세 종목에서 1년 전 고점을 목표로 잡는 오류가 생김)
+    res_c = [c[0] for c in cluster(res_raw)
+             if 0.015 < (c[0] - price) / price <= MAX_TARGET_PCT / 100]
     if not res_c:
         return None
     strong = [lv for lv in res_c if touches(highs, lv) >= 2]
@@ -178,7 +186,9 @@ def build_message(rows):
         "\n".join([
             f"🔹 <b>{r['ticker']}</b> 현재가 : {r['price']:.2f}",
             f"손절가 : {r['stop']:.2f} | 익절가 : {r['target']:.2f}",
-            f"손익비 : {r['rr']:.1f} : 1 (지지선까지 -{r['gap']:.1f}%)",
+            (f"손익비 : {r['prev_rr']:.1f} → <b>{r['rr']:.1f}</b> : 1  🔁 개선"
+             if r.get("prev_rr") else
+             f"손익비 : {r['rr']:.1f} : 1") + f" (지지선까지 -{r['gap']:.1f}%)",
             f"<b>[분석]</b> {r['reason']}",
         ])
         for r in rows
@@ -208,10 +218,29 @@ def load_state():
         return {}
 
 
+def should_alert(prev, rr, now):
+    """재알림 판단. 신규 종목이거나, 손익비가 뚜렷이 좋아졌을 때만 다시 알림."""
+    if not prev:
+        return True, None
+    if prev.get("n", 1) >= MAX_ALERTS_DAY:
+        return False, None
+    try:
+        elapsed = (now - datetime.fromisoformat(prev["ts"])).total_seconds() / 60
+    except (KeyError, ValueError):
+        elapsed = COOLDOWN_MIN
+    if elapsed < COOLDOWN_MIN:
+        return False, None
+    prev_rr = prev.get("rr", 0)
+    if rr >= prev_rr * RR_IMPROVE:
+        return True, prev_rr
+    return False, None
+
+
 def main():
-    """15분마다 실행돼도 같은 종목을 하루 한 번만 알립니다.
-    DAILY_SUMMARY=1 이면 후보가 없어도 '없음' 메시지를 보냅니다(개장 30분 전 1회용)."""
-    today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    """같은 종목이라도 손익비가 25% 이상 개선되면 다시 알립니다.
+    DAILY_SUMMARY=1 이면 후보가 없어도 '없음' 메시지를 보냅니다."""
+    now = datetime.now(ZoneInfo("America/New_York"))
+    today = now.strftime("%Y-%m-%d")
     state = load_state()
     daily = os.environ.get("DAILY_SUMMARY") == "1"
 
@@ -219,23 +248,39 @@ def main():
     for t in TICKERS:
         try:
             r = analyze(t)
-            if r and r["rr"] >= MIN_RR and r["gap"] <= MAX_SUPPORT_GAP:
+            if r and MIN_RR <= r["rr"] <= MAX_RR and r["gap"] <= MAX_SUPPORT_GAP:
                 rows.append(r)
         except Exception as e:
             print(f"{t} 실패: {e}", file=sys.stderr)
 
     rows.sort(key=lambda x: x["rr"], reverse=True)
-    fresh = [r for r in rows if state.get(r["ticker"]) != today][:5]
+
+    fresh = []
+    for r in rows:
+        prev = state.get(r["ticker"])
+        if isinstance(prev, str):          # 구버전 상태 형식 호환
+            prev = {"date": prev, "rr": 0, "ts": now.isoformat(), "n": 1}
+        if prev and prev.get("date") != today:
+            prev = None                    # 날짜가 바뀌면 초기화
+        ok, prev_rr = should_alert(prev, r["rr"], now)
+        if ok:
+            r["prev_rr"] = prev_rr
+            r["n"] = (prev or {}).get("n", 0) + 1
+            fresh.append(r)
+        if len(fresh) >= 5:
+            break
 
     if not fresh and not daily:
         print("새 신호 없음 — 발송 생략")
     else:
         send(build_message(fresh))
         for r in fresh:
-            state[r["ticker"]] = today
+            state[r["ticker"]] = {"date": today, "rr": round(r["rr"], 2),
+                                  "ts": now.isoformat(), "n": r["n"]}
 
     # 발송 여부와 무관하게 항상 기록 (없으면 워크플로의 git add가 실패)
-    state = {k: v for k, v in state.items() if v == today}
+    state = {k: v for k, v in state.items()
+             if isinstance(v, dict) and v.get("date") == today}
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=2, sort_keys=True)
 
